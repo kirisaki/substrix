@@ -1,29 +1,46 @@
+MEMORY
+{
+  RAM : ORIGIN = 0x80000000, LENGTH = 128M
+}
+
 ENTRY(_start)
 
-SECTIONS {
-    . = 0x80000000;
+SECTIONS
+{
+  . = 0x80000000;
 
-    .text : {
-        *(.text.entry)
-        *(.text*)
-    }
+  .text : {
+    KEEP(*(.text.init));
+    *(.text);
+    *(.text.*);
+  } > RAM
 
-    .rodata : {
-        *(.rodata*)
-    }
+  .rodata : ALIGN(4) {
+    *(.rodata);
+    *(.rodata.*);
+  } > RAM
 
-    .data : AT (ADDR(.text) + SIZEOF(.text) + SIZEOF(.rodata)) {
-        PROVIDE(__data_start = .);
-        *(.data*)
-        PROVIDE(__data_end = .);
-    }
+  .data : ALIGN(4) {
+    __data_start = .;
+    *(.data);
+    *(.data.*);
+    __data_end = .;
+  } > RAM
 
-    PROVIDE(__data_rom_start = LOADADDR(.data));
+  .bss : ALIGN(4) {
+    __bss_start = .;
+    *(.bss);
+    *(.bss.*);
+    *(COMMON);
+    __bss_end = .;
+  } > RAM
 
-    .bss : {
-        PROVIDE(__bss_start = .);
-        *(.bss*)
-        *(COMMON)
-        PROVIDE(__bss_end = .);
-    }
+  /* グローバルポインター */
+  __global_pointer$ = MIN(__data_start + 0x800, MAX(__data_start + 0x800, __bss_end - 0x800));
+
+  /DISCARD/ : {
+    *(.eh_frame*);
+    *(.debug*);
+    *(.comment);
+  }
 }

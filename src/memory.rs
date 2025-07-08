@@ -1,31 +1,22 @@
 unsafe extern "C" {
-    static __bss_start: u32;
-    static __bss_end: u32;
-    static __data_start: u32;
-    static __data_end: u32;
-    static __data_rom_start: u32;
+    unsafe static __bss_start: u8;
+    unsafe static __bss_end: u8;
+    unsafe static __data_start: u8;
+    unsafe static __data_end: u8;
 }
 
 pub unsafe fn zero_bss() {
-    unsafe {
-        let mut bss = &__bss_start as *const u32 as *mut u32;
-        let end = &__bss_end as *const u32;
-        while bss < end as *mut u32 {
-            core::ptr::write_volatile(bss, 0);
-            bss = bss.add(1);
-        }
+    let start = &__bss_start as *const u8 as *mut u8;
+    let end = &__bss_end as *const u8;
+    let len = end as usize - start as usize;
+
+    if len > 0 {
+        core::ptr::write_bytes(start, 0, len);
     }
 }
 
 pub unsafe fn init_data() {
-    unsafe {
-        let mut src = &__data_rom_start as *const u32;
-        let mut dst = &__data_start as *const u32 as *mut u32;
-        let end = &__data_end as *const u32 as *mut u32;
-        while dst < end {
-            core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
-            dst = dst.add(1);
-            src = src.add(1);
-        }
-    }
+    // データセクションは既にRAMに配置されているので、
+    // この関数は何もしません（QEMU virtマシンの場合）
+    // 必要に応じて初期化コードをここに追加
 }
