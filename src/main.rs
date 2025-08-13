@@ -1,7 +1,12 @@
 #![no_std]
 #![no_main]
 
+#[macro_use]
 mod console;
+mod csr;
+mod memory;
+mod trap;
+
 pub const UART0: *mut u8 = 0x1000_0000 as *mut u8;
 
 use core::panic::PanicInfo;
@@ -20,6 +25,12 @@ pub extern "C" fn rust_main() -> ! {
 
     println_hex!("UART base: ", 0x10000000);
     println_hex!("RAM start: ", 0x80000000 as u32);
+
+    // トラップハンドラの初期化
+    trap::init_trap();
+
+    // ecallのテスト
+    trap::test_ecall();
 
     println!("Boot complete!");
 
