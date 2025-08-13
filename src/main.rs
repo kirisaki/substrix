@@ -3,8 +3,8 @@
 
 #[macro_use]
 mod console;
-mod csr;
-mod memory;
+
+mod arch;
 mod trap;
 
 pub const UART0: *mut u8 = 0x1000_0000 as *mut u8;
@@ -16,8 +16,8 @@ pub extern "C" fn rust_main() -> ! {
     println!("Hello, UART!");
     println!("Substrix OS booting...");
 
-    println_number!("カウント: ", 12345);
-    println_hex!("アドレス: ", 0xDEADBEEF as u32);
+    println_number!("count: ", 12345);
+    println_hex!("address: ", 0xDEADBEEF as u32);
 
     let my_var = 42;
     debug!(my_var);
@@ -26,10 +26,10 @@ pub extern "C" fn rust_main() -> ! {
     println_hex!("UART base: ", 0x10000000);
     println_hex!("RAM start: ", 0x80000000 as u32);
 
-    // トラップハンドラの初期化
+    // Initialize trap handler
     trap::init_trap();
 
-    // ecallのテスト
+    // Test ecall
     trap::test_ecall();
 
     println!("Boot complete!");

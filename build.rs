@@ -1,7 +1,7 @@
 fn main() {
     cc::Build::new()
-        .file("boot.s")
-        .file("trap.s")
+        .file("asm/boot.s")
+        .file("asm/trap.s")
         .flag("-march=rv64gc")
         .flag("-mabi=lp64d")
         .flag("-nostdlib")

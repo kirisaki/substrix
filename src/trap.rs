@@ -1,6 +1,8 @@
-use crate::{csr, UART0};
+use crate::println;
+use crate::println_hex;
+use crate::{arch, UART0};
 
-// トラップの種類を定義
+// Define traps
 #[derive(Debug)]
 pub enum TrapCause {
     SoftwareInterrupt,
@@ -39,8 +41,8 @@ pub extern "C" fn rust_trap_handler() {
         core::ptr::write_volatile(crate::UART0, b'\n');
     }
 
-    let mcause = csr::read_mcause();
-    let mepc = csr::read_mepc();
+    let mcause = arch::csr::read_mcause();
+    let mepc = arch::csr::read_mepc();
 
     // シンプルな出力
     unsafe {
@@ -60,7 +62,7 @@ pub extern "C" fn rust_trap_handler() {
     // ecallの場合、mepcを進める
     if mcause == 11 {
         unsafe {
-            csr::write_mepc(mepc + 4);
+            arch::csr::write_mepc(mepc + 4);
             core::ptr::write_volatile(crate::UART0, b'O'); // OK
             core::ptr::write_volatile(crate::UART0, b'K');
             core::ptr::write_volatile(crate::UART0, b'\n');
@@ -77,7 +79,7 @@ pub fn init_trap() {
     // 下位2ビットは00（Direct mode）
     let handler_addr = trap_handler as usize;
     unsafe {
-        csr::write_mtvec(handler_addr);
+        arch::csr::write_mtvec(handler_addr);
     }
 
     println!("Trap handler initialized");
