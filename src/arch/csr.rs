@@ -5,6 +5,14 @@ pub unsafe fn write_mtvec(addr: usize) {
     core::arch::asm!("csrw mtvec, {}", in(reg) addr);
 }
 
+pub fn read_mtvec() -> usize {
+    let mut val: usize;
+    unsafe {
+        core::arch::asm!("csrr {}, mtvec", out(reg) val);
+    }
+    val
+}
+
 // mcause (Machine Cause)
 pub fn read_mcause() -> usize {
     let mut val: usize;
