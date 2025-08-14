@@ -3,7 +3,8 @@ use crate::{arch, println, println_hex, UART0};
 // Define traps
 #[derive(Debug)]
 pub enum TrapCause {
-    SoftwareInterrupt, // ソフトウェア割り込みを追加
+    SoftwareInterrupt, // ソフトウェア割り込み
+    TimerInterrupt,    // タイマ割り込み追加
     Ecall,
     Other(usize),
 }
@@ -16,6 +17,7 @@ impl TrapCause {
         if interrupt {
             match exception_code {
                 3 => TrapCause::SoftwareInterrupt, // Machine software interrupt
+                7 => TrapCause::TimerInterrupt,    // Machine timer interrupt
                 _ => TrapCause::Other(mcause),
             }
         } else {
@@ -57,6 +59,25 @@ pub extern "C" fn rust_trap_handler() {
                 core::ptr::write_volatile(UART0, b'\n');
             }
         }
+        TrapCause::TimerInterrupt => {
+            // タイマ割り込み処理
+            unsafe {
+                // タイマ割り込みマーカー（デバッグ用）
+                core::ptr::write_volatile(UART0, b'[');
+                core::ptr::write_volatile(UART0, b'T');
+                core::ptr::write_volatile(UART0, b'I');
+                core::ptr::write_volatile(UART0, b'M');
+                core::ptr::write_volatile(UART0, b']');
+            }
+
+            // タイマハンドラを呼び出し
+            crate::timer::handle_timer_interrupt();
+
+            unsafe {
+                core::ptr::write_volatile(UART0, b'T');
+                core::ptr::write_volatile(UART0, b'\n');
+            }
+        }
         TrapCause::Ecall => {
             // ecall処理 - mepcを次の命令に進める
             unsafe {
@@ -65,7 +86,7 @@ pub extern "C" fn rust_trap_handler() {
                 core::ptr::write_volatile(UART0, b'\n');
             }
         }
-        TrapCause::Other(cause) => {
+        TrapCause::Other(_cause) => {
             // デバッグ情報の詳細出力
             unsafe {
                 core::ptr::write_volatile(UART0, b'?');

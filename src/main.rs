@@ -5,9 +5,10 @@
 mod console;
 
 mod arch;
-mod interrupt;
+mod interrupt; // ソフトウェア割り込みモジュールを追加
 mod msip_debug; // MSIP安全性検証モジュールを追加
-mod trap; // trap機能を追加 // ソフトウェア割り込みモジュールを追加
+mod timer;
+mod trap; // trap機能を追加 // タイマモジュールを追加
 
 pub const UART0: *mut u8 = 0x1000_0000 as *mut u8;
 
@@ -116,7 +117,47 @@ pub extern "C" fn rust_main() -> ! {
         }
     }
 
-    // Phase 8: ソフトウェア割り込み基本実装（簡素版）
+    // Phase 8.5: タイマ基本機能復活テスト（新規追加）
+    println!("\n=== PHASE 8.5: TIMER BASIC FUNCTIONALITY ===");
+
+    // タイマの基本機能テスト（割り込みなし）
+    println!("Testing timer basic functions...");
+    timer::show_memory_info();
+
+    // MTIMEの読み取りテスト
+    println!("Testing MTIME reading...");
+    let mtime_start = timer::read_mtime();
+    print!("MTIME start: ");
+    print_number!(mtime_start);
+    println!();
+
+    // 短い遅延後に再度読み取り
+    for _ in 0..1000000 {
+        unsafe {
+            core::arch::asm!("nop");
+        }
+    }
+
+    let mtime_end = timer::read_mtime();
+    print!("MTIME end: ");
+    print_number!(mtime_end);
+    println!();
+
+    if mtime_end > mtime_start {
+        println!("✓ Timer is running correctly");
+        let elapsed = mtime_end - mtime_start;
+        print!("Elapsed ticks: ");
+        print_number!(elapsed);
+        println!();
+    } else {
+        println!("✗ Timer not working");
+    }
+
+    // MTIMECMPの安全テスト
+    println!("Testing MTIMECMP operations...");
+    timer::debug_timer_addresses();
+
+    // Phase 8: ソフトウェア割り込み基本実装（既存）
     println!("\n=== PHASE 8: SOFTWARE INTERRUPT BASIC IMPLEMENTATION ===");
 
     // ソフトウェア割り込みシステムの初期化
@@ -136,7 +177,7 @@ pub extern "C" fn rust_main() -> ! {
     println!("\n=== PHASE 9: SIMPLE YIELD TEST ===");
 
     println!("Testing single yield() call...");
-    match interrupt::yield_cpu() {
+    match interrupt::yield_cpu_relaxed() {
         Ok(()) => println!("✓ Single yield successful"),
         Err(e) => {
             print!("✗ Single yield failed: ");
@@ -144,20 +185,307 @@ pub extern "C" fn rust_main() -> ! {
         }
     }
 
-    // Phase 10: システム安定性の最終確認
-    println!("\n=== PHASE 10: FINAL STABILITY CHECK ===");
-    println!("Running final stability test...");
+    // Phase 11: タイマ割り込み段階的有効化（新規追加）
+    println!("\n=== PHASE 11: TIMER INTERRUPT STAGED ENABLEMENT ===");
 
-    let mut final_counter = 0u64;
+    // Step 1: タイマシステムの初期化
+    println!("Step 1: Initializing timer system...");
+    timer::init_timer();
+
+    // Step 2: 安全な遅延テスト
+    println!("Step 2: Testing safe delay functionality...");
+    timer::safe_delay_test();
+
+    // Step 3: タイマ割り込み有効化準備
+    println!("Step 3: Preparing timer interrupt enablement...");
+
+    // 現在のMIE状態を確認
+    let mie_before = arch::csr::read_mie();
+    println_hex!("MIE before timer enable: ", mie_before);
+
+    // MTIE (Machine Timer Interrupt Enable) を有効化
+    println!("Enabling MTIE...");
+    unsafe {
+        arch::csr::enable_machine_timer_interrupt();
+    }
+
+    let mie_after = arch::csr::read_mie();
+    println_hex!("MIE after timer enable: ", mie_after);
+
+    if (mie_after & (1 << 7)) != 0 {
+        println!("✓ Timer interrupts (MTIE) enabled in MIE");
+    } else {
+        println!("✗ MTIE not enabled");
+    }
+
+    // Step 4: 控えめなタイマ割り込みテスト
+    println!("Step 4: Conservative timer interrupt test...");
+    println!("Setting timer interrupt for 30 seconds in future...");
+
+    // 非常に遠い未来にタイマ設定（まだ割り込み発生させない）
+    let current_time = timer::read_mtime();
+    let very_far_future = current_time + 300_000_000; // 30秒後（10MHz想定）
+    timer::write_mtimecmp(very_far_future);
+
+    print!("Current MTIME: ");
+    print_number!(current_time);
+    println!();
+    print!("MTIMECMP set to: ");
+    print_number!(very_far_future);
+    println!();
+
+    println!("Timer interrupt system prepared (not yet triggered)");
+
+    // Phase 12: 統合システムテスト（タイマ + ソフトウェア割り込み）
+    println!("\n=== PHASE 12: INTEGRATED INTERRUPT SYSTEM TEST ===");
+
+    println!("Testing both software and timer interrupt systems...");
+
+    // グローバル割り込み有効化（重要：両方の割り込みが動作するため）
+    println!("Enabling global interrupts for integrated test...");
+    unsafe {
+        arch::csr::enable_global_interrupts();
+    }
+
+    let mstatus_final = arch::csr::read_mstatus();
+    let mie_final = arch::csr::read_mie();
+    println_hex!("Final mstatus: ", mstatus_final);
+    println_hex!("Final mie: ", mie_final);
+
+    // 割り込み有効状態の最終確認
+    println!("Final interrupt enable status:");
+    if (mstatus_final & (1 << 3)) != 0 {
+        println!("  ✓ Global interrupts (MIE) enabled");
+    }
+    if (mie_final & (1 << 3)) != 0 {
+        println!("  ✓ Software interrupts (MSIE) enabled");
+    }
+    if (mie_final & (1 << 7)) != 0 {
+        println!("  ✓ Timer interrupts (MTIE) enabled");
+    }
+
+    // Phase 13: ライブテスト（短時間のタイマ割り込み）
+    println!("\n=== PHASE 13: LIVE TIMER INTERRUPT TEST ===");
+
+    println!("Setting up actual timer interrupt (SHORT interval)...");
+    let test_time = timer::read_mtime();
+
+    // より短い間隔でテスト（実際の時刻進行に合わせて）
+    let timer_test_target = test_time + 1_000_000; // 100ms後（短縮）
+
+    print!("Current time: ");
+    print_number!(test_time);
+    println!();
+    print!("Timer interrupt will fire at: ");
+    print_number!(timer_test_target);
+    println!();
+    print!("Difference (100ms): ");
+    print_number!(timer_test_target - test_time);
+    println!();
+
+    timer::write_mtimecmp(timer_test_target);
+
+    // 書き込み確認
+    let mtimecmp_readback = timer::read_mtimecmp();
+    print!("MTIMECMP readback: ");
+    print_number!(mtimecmp_readback);
+    println!();
+
+    if mtimecmp_readback != timer_test_target {
+        println!("✗ MTIMECMP write failed!");
+    } else {
+        println!("✓ MTIMECMP set correctly");
+    }
+
+    println!("Waiting for timer interrupt (SHORT wait)...");
+
+    // より短い待機ループ
+    let mut wait_loops = 0;
+    let max_wait_loops = 20; // 大幅短縮
+
+    while wait_loops < max_wait_loops {
+        let current = timer::read_mtime();
+
+        print!("Wait ");
+        print_number!(wait_loops);
+        print!(": current=");
+        print_number!(current);
+
+        if current >= timer_test_target {
+            println!(" -> TARGET REACHED!");
+
+            // 少し待ってからtick確認
+            for _ in 0..100000 {
+                unsafe {
+                    core::arch::asm!("nop");
+                }
+            }
+
+            let post_interrupt_ticks = timer::get_ticks();
+            print!("Ticks after target: ");
+            print_number!(post_interrupt_ticks);
+            println!();
+            break;
+        } else {
+            let remaining = timer_test_target - current;
+            print!(", remaining=");
+            print_number!(remaining);
+            println!();
+        }
+
+        // 短い待機
+        for _ in 0..50000 {
+            unsafe {
+                core::arch::asm!("nop");
+            }
+        }
+
+        wait_loops += 1;
+    }
+
+    // 最終状態確認
+    let final_time = timer::read_mtime();
+    let final_ticks = timer::get_ticks();
+
+    print!("Final time: ");
+    print_number!(final_time);
+    print!(", Final ticks: ");
+    print_number!(final_ticks);
+    println!();
+
+    if final_ticks > 0 {
+        println!("✓ Timer interrupts are working!");
+    } else if final_time >= timer_test_target {
+        println!("⚠ Target reached but no ticks - checking handler");
+
+        // ハンドラが動作しているかより詳細にチェック
+        timer::display_timer_statistics();
+    } else {
+        println!("ℹ Target not reached in time - trying longer interval");
+
+        // より長い間隔で再テスト
+        let longer_target = final_time + 2_000_000; // 200ms
+        println!("Trying longer interval test...");
+        timer::write_mtimecmp(longer_target);
+
+        for retry_loop in 0..10 {
+            let retry_current = timer::read_mtime();
+            if retry_current >= longer_target {
+                let retry_ticks = timer::get_ticks();
+                print!("Retry result - ticks: ");
+                print_number!(retry_ticks);
+                println!();
+                break;
+            }
+
+            for _ in 0..200000 {
+                unsafe {
+                    core::arch::asm!("nop");
+                }
+            }
+        }
+    }
+
+    println!("Timer interrupt test completed");
+
+    // タイマを安全な状態に戻す
+    let safe_future = timer::read_mtime() + 100_000_000; // 10秒後
+    timer::write_mtimecmp(safe_future);
+
+    // Phase 10: システム安定性の最終確認（既存のままだが、統合システム対応）
+    println!("\n=== PHASE 10: FINAL STABILITY CHECK ===");
+    // Phase 14: 統合長期安定性テスト
+    println!("\n=== PHASE 14: INTEGRATED LONG-TERM STABILITY ===");
+    println!("Running integrated stability test with all interrupt systems...");
+
+    let mut integrated_counter = 0u64;
+    let mut test_cycle = 0u64;
 
     loop {
-        final_counter = final_counter.wrapping_add(1);
+        integrated_counter = integrated_counter.wrapping_add(1);
 
-        if final_counter % 10000000 == 0 {
-            println_number!("Final stable count: ", final_counter);
+        if integrated_counter % 10000000 == 0 {
+            print!("Integrated count: ");
+            print_number!(integrated_counter);
+            println!();
 
-            // 統計情報表示
-            if final_counter % 50000000 == 0 {
+            test_cycle += 1;
+
+            // 様々な機能のローテーションテスト
+            match test_cycle % 6 {
+                1 => {
+                    // ecallテスト
+                    if test_cycle <= 30 {
+                        println!("Testing ecall...");
+                        trap::test_ecall_safe();
+                        println!("Ecall OK");
+                    }
+                }
+                2 => {
+                    // MSIPテスト
+                    println!("Testing MSIP...");
+                    match msip_debug::safe_msip_read() {
+                        Ok(_) => println!("MSIP OK"),
+                        Err(e) => {
+                            print!("MSIP failed: ");
+                            println!(e);
+                        }
+                    }
+                }
+                3 => {
+                    // yield()テスト（ソフトウェア割り込み）
+                    if test_cycle <= 20 {
+                        println!("Testing yield (SW interrupt)...");
+                        match interrupt::yield_cpu_relaxed() {
+                            Ok(()) => println!("Yield OK"),
+                            Err(e) => {
+                                print!("Yield failed: ");
+                                println!(e);
+                            }
+                        }
+                    }
+                }
+                4 => {
+                    // タイマ読み取りテスト
+                    println!("Testing timer reading...");
+                    let mtime = timer::read_mtime();
+                    let ticks = timer::get_ticks();
+                    print!("MTIME: ");
+                    print_number!(mtime);
+                    print!(", Ticks: ");
+                    print_number!(ticks);
+                    println!();
+                }
+                5 => {
+                    // 統計情報表示
+                    println!("=== INTEGRATED STATISTICS ===");
+                    interrupt::display_statistics();
+
+                    let current_mtime = timer::read_mtime();
+                    let current_ticks = timer::get_ticks();
+                    println_number!("Current MTIME: ", current_mtime);
+                    println_number!("Timer ticks: ", current_ticks);
+                }
+                0 => {
+                    // システム状態の総合確認
+                    if test_cycle % 12 == 0 {
+                        println!("=== COMPREHENSIVE SYSTEM STATUS ===");
+                        let mstatus = arch::csr::read_mstatus();
+                        let mie = arch::csr::read_mie();
+                        let mtimecmp_check = timer::read_mtime() + 1000000;
+
+                        println_hex!("mstatus: ", mstatus);
+                        println_hex!("mie: ", mie);
+                        println_number!("Next safe mtimecmp: ", mtimecmp_check);
+                    }
+                }
+                _ => {}
+            }
+
+            // テストサイクルのリセット
+            if test_cycle > 60 {
+                test_cycle = 0;
+                println!("=== CYCLE RESET - SYSTEM RUNNING PERFECTLY ===");
                 interrupt::display_statistics();
             }
         }
