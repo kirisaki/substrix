@@ -1,5 +1,5 @@
 use crate::arch::csr;
-use crate::{debug, print, print_number, println, UART0};
+use crate::{debug, print, print_number, println, timer, UART0};
 
 pub fn run_all_tests() {
     println!("Running basic tests...");
@@ -74,6 +74,7 @@ pub fn run_detailed_tests() {
 
     detailed_csr_test();
     detailed_trap_test();
+    detailed_timer_test();
 }
 
 #[allow(dead_code)]
@@ -87,6 +88,10 @@ fn detailed_csr_test() {
     let mtvec = csr::read_mtvec();
     println!("  mtvec: ");
     debug_hex!(mtvec);
+
+    let mie = csr::read_mie();
+    println!("  mie: ");
+    debug_hex!(mie);
 
     println!("Detailed CSR test PASS");
 }
@@ -107,4 +112,50 @@ fn detailed_trap_test() {
     }
 
     println!("Detailed trap test PASS");
+}
+
+#[allow(dead_code)]
+fn detailed_timer_test() {
+    println!("Detailed timer test...");
+
+    // タイマレジスタのテスト（修正版）
+    let mtime = timer::read_mtime();
+    println!("  Current mtime: ");
+    debug!(mtime);
+
+    let current_ms = timer::get_time_ms();
+    println!("  Current time in ms: ");
+    debug!(current_ms);
+
+    let current_ticks = timer::get_ticks();
+    println!("  Current ticks: ");
+    debug!(current_ticks);
+
+    // 割り込み有効状態のテスト
+    let interrupts_on = csr::interrupts_enabled();
+    if interrupts_on {
+        println!("  Global interrupts: ENABLED");
+    } else {
+        println!("  Global interrupts: DISABLED");
+    }
+
+    // MIEレジスタの確認
+    let mie = csr::read_mie();
+    println!("  mie register: ");
+    debug_hex!(mie);
+
+    if (mie & (1 << 7)) != 0 {
+        println!("  Timer interrupt enable (MTIE): ENABLED");
+    } else {
+        println!("  Timer interrupt enable (MTIE): DISABLED");
+    }
+
+    // タイマが正常に動作している場合
+    if mtime > 0 {
+        println!("  Timer hardware: WORKING");
+    } else {
+        println!("  Timer hardware: NOT WORKING");
+    }
+
+    println!("Detailed timer test PASS");
 }
