@@ -13,3 +13,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ecall` instruction support
 - Memory management infrastructure
 - QEMU virt machine support
+- Basix timer support
