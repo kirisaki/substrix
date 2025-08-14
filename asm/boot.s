@@ -8,16 +8,25 @@ _start:
     # Clear frame pointer
     li fp, 0
     
-    # Set up global pointer
+    # Set up global pointer (very carefully)
     .option push
     .option norelax
     la gp, __global_pointer$
     .option pop
     
+    # Initialize basic registers to zero (safety)
+    li t0, 0
+    li t1, 0
+    li t2, 0
+    li a0, 0
+    li a1, 0
+    li a2, 0
+    li a3, 0
+    
     # Call Rust main function
     call rust_main
     
-    # Infinite loop (should never reach here)
+    # If rust_main returns (should never happen), infinite loop
 1:
-    wfi  # Wait for interrupt (power saving)
+    nop
     j 1b

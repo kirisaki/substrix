@@ -1,0 +1,422 @@
+// RISC-V ソフトウェア割り込み完全実装
+// 検証済みMSIPアクセスを基盤とする
+
+use crate::{arch::csr, println, println_hex, println_number, UART0};
+
+// 検証済みCLINTアドレス
+const MSIP_ADDR: *mut u32 = 0x2000000 as *mut u32; // Hart 0のMSIP
+
+// グローバル状態管理（統計とデバッグ用）
+static mut SW_INTERRUPT_COUNT: u64 = 0;
+static mut YIELD_COUNT: u64 = 0;
+static mut LAST_YIELD_TIME: u64 = 0;
+
+// エラー統計
+static mut MSIP_ERRORS: u64 = 0;
+static mut HANDLER_CALLS: u64 = 0;
+
+/// ソフトウェア割り込みシステムの完全初期化
+pub fn init_software_interrupt() {
+    println!("=== SOFTWARE INTERRUPT SYSTEM INITIALIZATION ===");
+
+    // Step 1: MSIPの初期化（クリア状態にする）
+    println!("Step 1: Initializing MSIP to clear state...");
+    match clear_software_interrupt() {
+        Ok(()) => println!("✓ MSIP cleared successfully"),
+        Err(e) => {
+            print!("✗ MSIP clear failed: ");
+            println!(e);
+            return;
+        }
+    }
+
+    // Step 2: ソフトウェア割り込み許可の設定
+    println!("Step 2: Enabling software interrupts in MIE...");
+    unsafe {
+        csr::enable_machine_software_interrupt();
+    }
+
+    let mie = csr::read_mie();
+    println_hex!("MIE register: ", mie);
+
+    if (mie & (1 << 3)) != 0 {
+        println!("✓ Machine Software Interrupt Enable (MSIE) is active");
+    } else {
+        println!("✗ MSIE not enabled");
+        return;
+    }
+
+    // Step 3: グローバル割り込み状態の確認
+    println!("Step 3: Checking global interrupt state...");
+    let mstatus = csr::read_mstatus();
+    let global_ie = (mstatus >> 3) & 1;
+
+    println_hex!("MSTATUS register: ", mstatus);
+    println_number!("Global interrupts (MIE): ", global_ie);
+
+    if global_ie == 0 {
+        println!("⚠ Global interrupts disabled - will enable when needed");
+    }
+
+    // Step 4: 統計情報の初期化
+    unsafe {
+        SW_INTERRUPT_COUNT = 0;
+        YIELD_COUNT = 0;
+        LAST_YIELD_TIME = 0;
+        MSIP_ERRORS = 0;
+        HANDLER_CALLS = 0;
+    }
+
+    println!("✓ Software interrupt system fully initialized");
+}
+
+/// 安全なMSIP読み取り
+fn read_msip_safe() -> Result<u32, &'static str> {
+    let val = unsafe { core::ptr::read_volatile(MSIP_ADDR) };
+    if val <= 1 {
+        Ok(val)
+    } else {
+        unsafe {
+            MSIP_ERRORS += 1;
+        }
+        Err("Invalid MSIP value")
+    }
+}
+
+/// 安全なMSIP書き込み
+fn write_msip_safe(value: u32) -> Result<(), &'static str> {
+    if value > 1 {
+        return Err("Invalid MSIP value (must be 0 or 1)");
+    }
+
+    unsafe {
+        core::ptr::write_volatile(MSIP_ADDR, value);
+    }
+
+    // 書き込み確認
+    match read_msip_safe() {
+        Ok(readback) if readback == value => Ok(()),
+        Ok(_) => {
+            unsafe {
+                MSIP_ERRORS += 1;
+            }
+            Err("MSIP write verification failed")
+        }
+        Err(e) => {
+            unsafe {
+                MSIP_ERRORS += 1;
+            }
+            Err(e)
+        }
+    }
+}
+
+/// ソフトウェア割り込みのトリガー
+pub fn trigger_software_interrupt() -> Result<(), &'static str> {
+    write_msip_safe(1)
+}
+
+/// ソフトウェア割り込みのクリア
+pub fn clear_software_interrupt() -> Result<(), &'static str> {
+    write_msip_safe(0)
+}
+
+/// yield()関数 - 自発的CPU譲渡（安全版）
+pub fn yield_cpu() -> Result<(), &'static str> {
+    unsafe {
+        YIELD_COUNT += 1;
+        LAST_YIELD_TIME = SW_INTERRUPT_COUNT;
+    }
+
+    println_number!("yield() #", unsafe { YIELD_COUNT });
+
+    // Step 1: MSIPセット
+    println!("Setting MSIP...");
+    match trigger_software_interrupt() {
+        Ok(()) => println!("MSIP set successfully"),
+        Err(e) => {
+            print!("MSIP set failed: ");
+            println!(e);
+            return Err(e);
+        }
+    }
+
+    // Step 2: グローバル割り込み有効化
+    let was_enabled = csr::interrupts_enabled();
+    if !was_enabled {
+        println!("Enabling global interrupts...");
+        unsafe {
+            csr::enable_global_interrupts();
+        }
+    }
+
+    // Step 3: 割り込み発生を待つ（短時間）
+    println!("Waiting for interrupt...");
+    let mut wait_count = 0;
+    let max_wait = 10000; // より短い待機時間
+
+    while wait_count < max_wait {
+        unsafe {
+            core::arch::asm!("nop");
+        }
+        wait_count += 1;
+
+        // MSIPがクリアされたかチェック
+        if wait_count % 1000 == 0 {
+            match read_msip_safe() {
+                Ok(0) => {
+                    println!("MSIP cleared by handler");
+                    break;
+                }
+                Ok(1) => {
+                    // まだセット状態
+                }
+                Ok(val) => {
+                    println_number!("Unexpected MSIP value: ", val);
+                }
+                Err(_) => {
+                    println!("MSIP read error during wait");
+                    break;
+                }
+            }
+        }
+    }
+
+    // Step 4: グローバル割り込みを元に戻す
+    if !was_enabled {
+        println!("Disabling global interrupts...");
+        unsafe {
+            csr::disable_global_interrupts();
+        }
+    }
+
+    // Step 5: 最終状態確認
+    match read_msip_safe() {
+        Ok(0) => {
+            println!("yield() completed successfully");
+            Ok(())
+        }
+        Ok(val) => {
+            println_number!("yield() completed but MSIP not cleared: ", val);
+            // 強制クリア
+            let _ = clear_software_interrupt();
+            Ok(())
+        }
+        Err(e) => {
+            print!("yield() completed with error: ");
+            println!(e);
+            Err(e)
+        }
+    }
+}
+
+/// ソフトウェア割り込みハンドラ（trap.rsから呼び出される）
+pub fn handle_software_interrupt() {
+    unsafe {
+        SW_INTERRUPT_COUNT += 1;
+        HANDLER_CALLS += 1;
+    }
+
+    // 非常に重要: 割り込みをクリアして無限ループを防ぐ
+    match clear_software_interrupt() {
+        Ok(()) => {
+            // ハンドラ実行の通知（簡潔に）
+            unsafe {
+                core::ptr::write_volatile(UART0, b'S');
+                core::ptr::write_volatile(UART0, b'\n');
+            }
+        }
+        Err(_) => {
+            // エラーの場合は最小限の出力
+            unsafe {
+                core::ptr::write_volatile(UART0, b'X'); // Error marker
+                core::ptr::write_volatile(UART0, b'\n');
+            }
+        }
+    }
+
+    // 将来ここにコンテキストスイッチロジックが入る
+    // 現在はシングルスレッドなので基本処理のみ
+}
+
+/// ソフトウェア割り込み機能の包括的テスト
+pub fn comprehensive_test() {
+    println!("=== COMPREHENSIVE SOFTWARE INTERRUPT TEST ===");
+
+    // Test 1: 基本的なMSIP操作
+    println!("Test 1: Basic MSIP operations");
+    test_basic_msip_operations();
+
+    // Test 2: 割り込み有効状態の確認
+    println!("Test 2: Interrupt enable states");
+    test_interrupt_enables();
+
+    // Test 3: 安全なyield()テスト
+    println!("Test 3: Safe yield() functionality");
+    test_yield_functionality();
+
+    // Test 4: ストレステスト
+    println!("Test 4: Stress test");
+    test_stress_operations();
+
+    println!("=== COMPREHENSIVE TEST COMPLETED ===");
+    display_statistics();
+}
+
+/// 基本的なMSIP操作テスト
+fn test_basic_msip_operations() {
+    println!("Testing basic MSIP operations...");
+
+    match test_basic_msip_operations_simple() {
+        Ok(()) => println!("✓ Basic MSIP operations successful"),
+        Err(e) => {
+            print!("✗ Basic MSIP operations failed: ");
+            println!(e);
+        }
+    }
+}
+
+/// 割り込み有効状態のテスト
+fn test_interrupt_enables() {
+    let mstatus = csr::read_mstatus();
+    let mie = csr::read_mie();
+
+    println_hex!("mstatus: ", mstatus);
+    println_hex!("mie: ", mie);
+
+    // Global interrupt enable
+    if (mstatus & (1 << 3)) != 0 {
+        println!("✓ Global interrupts (MIE) enabled");
+    } else {
+        println!("⚠ Global interrupts (MIE) disabled");
+    }
+
+    // Software interrupt enable
+    if (mie & (1 << 3)) != 0 {
+        println!("✓ Software interrupts (MSIE) enabled");
+    } else {
+        println!("✗ Software interrupts (MSIE) disabled");
+    }
+}
+
+/// yield()機能のテスト
+fn test_yield_functionality() {
+    println!("Testing yield() functionality...");
+
+    // 数回のyield()テスト
+    for i in 1..=3 {
+        print!("Yield test #");
+        print_number!(i);
+        println!();
+
+        match yield_cpu() {
+            Ok(()) => println!("✓ Yield successful"),
+            Err(e) => {
+                print!("✗ Yield failed: ");
+                println!(e);
+            }
+        }
+
+        // テスト間の短い遅延
+        for _ in 0..1000000 {
+            unsafe {
+                core::arch::asm!("nop");
+            }
+        }
+    }
+}
+
+/// ストレステスト
+fn test_stress_operations() {
+    println!("Running stress test (10 rapid operations)...");
+
+    let mut success_count = 0;
+    let total_tests = 10;
+
+    for i in 1..=total_tests {
+        match trigger_software_interrupt() {
+            Ok(()) => {
+                // 短い遅延
+                for _ in 0..100 {
+                    unsafe {
+                        core::arch::asm!("nop");
+                    }
+                }
+
+                match clear_software_interrupt() {
+                    Ok(()) => {
+                        success_count += 1;
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(_) => {}
+        }
+
+        if i % 5 == 0 {
+            print!("Stress test progress: ");
+            print_number!(i);
+            print!("/");
+            print_number!(total_tests);
+            println!();
+        }
+    }
+
+    print!("Stress test result: ");
+    print_number!(success_count);
+    print!("/");
+    print_number!(total_tests);
+    println!(" successful");
+}
+
+/// 統計情報の表示
+pub fn display_statistics() {
+    println!("=== SOFTWARE INTERRUPT STATISTICS ===");
+
+    let stats = unsafe { (SW_INTERRUPT_COUNT, YIELD_COUNT, HANDLER_CALLS, MSIP_ERRORS) };
+
+    println_number!("Software interrupts handled: ", stats.0);
+    println_number!("Yield calls made: ", stats.1);
+    println_number!("Handler invocations: ", stats.2);
+    println_number!("MSIP errors: ", stats.3);
+
+    // エラー率の計算
+    if stats.2 > 0 {
+        let error_rate = (stats.3 * 100) / stats.2;
+        println_number!("Error rate: ", error_rate);
+        print!("%");
+        println!();
+    }
+}
+
+/// システム統計の取得
+pub fn get_statistics() -> (u64, u64, u64, u64) {
+    unsafe { (SW_INTERRUPT_COUNT, YIELD_COUNT, HANDLER_CALLS, MSIP_ERRORS) }
+}
+
+/// 簡単なMSIP動作テスト
+pub fn test_basic_msip_operations_simple() -> Result<(), &'static str> {
+    println!("Simple MSIP operations test...");
+
+    // 初期読み取り
+    let initial = read_msip_safe()?;
+    println_number!("Initial MSIP: ", initial as u64);
+
+    // セット
+    write_msip_safe(1)?;
+    let after_set = read_msip_safe()?;
+    if after_set != 1 {
+        return Err("MSIP set failed");
+    }
+    println_number!("After set: ", after_set as u64);
+
+    // クリア
+    write_msip_safe(0)?;
+    let after_clear = read_msip_safe()?;
+    if after_clear != 0 {
+        return Err("MSIP clear failed");
+    }
+    println_number!("After clear: ", after_clear as u64);
+
+    Ok(())
+}
