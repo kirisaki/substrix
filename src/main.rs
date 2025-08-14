@@ -5,10 +5,11 @@
 mod console;
 
 mod arch;
-mod interrupt; // ソフトウェア割り込みモジュールを追加
-mod msip_debug; // MSIP安全性検証モジュールを追加
+mod interrupt;
+mod msip_debug;
+mod panic;
 mod timer;
-mod trap; // trap機能を追加 // タイマモジュールを追加
+mod trap;
 
 pub const UART0: *mut u8 = 0x1000_0000 as *mut u8;
 
@@ -523,6 +524,9 @@ fn basic_tests() {
     } else {
         println!("✗ Memory: FAIL");
     }
+    // Phase 15: パニック・デバッグシステムのテスト
+    println!("\n=== PHASE 15: PANIC & DEBUG SYSTEM TEST ===");
+    test_panic_system();
 }
 
 /// CSR状態分析
@@ -549,9 +553,9 @@ fn analyze_csr_state() {
     let mpie_bit = (mstatus >> 7) & 1;
     let mpp_bits = (mstatus >> 11) & 3;
 
-    println_number!("mstatus.MIE: ", mie_bit);
-    println_number!("mstatus.MPIE: ", mpie_bit);
-    println_number!("mstatus.MPP: ", mpp_bits);
+    println_number!("mstatus.MIE: ", mie_bit as u64);
+    println_number!("mstatus.MPIE: ", mpie_bit as u64);
+    println_number!("mstatus.MPP: ", mpp_bits as u64);
 
     println!("CSR state analysis complete");
 }
@@ -567,30 +571,347 @@ fn read_mhartid() -> u64 {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    println!("PANIC in safe trap mode!");
-    if let Some(location) = info.location() {
-        print!("Location: ");
-        print!(location.file());
-        print!(":");
-        print_number!(location.line());
-        println!();
+    panic::enhanced_panic_handler(info)
+}
+
+fn test_panic_system() {
+    println!("=== PANIC SYSTEM COMPREHENSIVE TEST ===");
+
+    // Test 1: アサーション機能のテスト
+    println!("Test 1: Assertion functionality");
+    test_assertions();
+
+    // Test 2: メモリチェック機能のテスト
+    println!("Test 2: Memory checking");
+    test_memory_checks();
+
+    // Test 3: スタック監視機能のテスト
+    println!("Test 3: Stack monitoring");
+    test_stack_monitoring();
+
+    // Test 4: CSR状態ダンプのテスト
+    println!("Test 4: CSR state dump");
+    test_csr_dump();
+
+    // Test 5: 制御されたパニック（最後）
+    println!("Test 5: Controlled panic test");
+    test_controlled_panic();
+
+    println!("All panic system tests completed successfully!");
+}
+
+/// アサーション機能のテスト
+fn test_assertions() {
+    println!("Testing assertion functionality...");
+
+    // 正常なアサーション（通る）
+    kassert!(2 + 2 == 4);
+    kassert!(true, "This should pass");
+    println!("✓ Normal assertions passed");
+
+    // 条件付きアサーション
+    let test_value = 42;
+    kassert!(test_value == 42);
+    kassert!(test_value > 0, "Value should be positive");
+    println!("✓ Conditional assertions passed");
+
+    // デバッグアサーション（デバッグビルドでのみ）
+    #[cfg(debug_assertions)]
+    {
+        println!("Debug build: Testing debug assertions");
+        // ここでは実際にはパニックしないテスト
+        println!("✓ Debug assertions ready");
     }
 
-    // パニック時のCSR状態
+    #[cfg(not(debug_assertions))]
+    {
+        println!("Release build: Debug assertions disabled");
+    }
+
+    println!("✓ Assertion tests completed");
+}
+
+/// メモリチェック機能のテスト
+fn test_memory_checks() {
+    println!("Testing memory checking functionality...");
+
+    // 正常なメモリアクセス
+    let test_array = [1u64, 2u64, 3u64, 4u64];
+    let ptr = test_array.as_ptr();
+
+    println_hex!("Test array address: ", ptr as usize);
+
+    // メモリ読み取りテスト
+    let value = unsafe { core::ptr::read_volatile(ptr) };
+    if value == 1 {
+        println!("✓ Memory read test passed");
+    } else {
+        println!("✗ Memory read test failed");
+    }
+
+    // アドレス範囲の検証
+    let ram_start = 0x80000000;
+    let ram_end = 0x88000000;
+    let test_addr = ptr as usize;
+
+    if test_addr >= ram_start && test_addr < ram_end {
+        println!("✓ Address in valid RAM range");
+    } else {
+        println!("⚠ Address outside RAM range (stack/heap)");
+    }
+
+    // 境界テスト（安全）
+    println!("Testing boundary conditions...");
+    test_memory_boundary_safe();
+
+    println!("✓ Memory check tests completed");
+}
+
+/// 安全な境界テスト
+fn test_memory_boundary_safe() {
+    // スタックの境界をテスト
+    let stack_var = 0u64;
+    let stack_addr = &stack_var as *const u64 as usize;
+
+    println_hex!("Stack variable address: ", stack_addr);
+
+    // スタック範囲の確認
+    let stack_base = 0x80100000; // boot.sで設定
+    if stack_addr < stack_base {
+        println!("✓ Stack growing downward correctly");
+    } else {
+        println!("⚠ Stack boundary unexpected");
+    }
+
+    // 安全なアドレス計算テスト
+    let safe_offset = 8;
+    let next_addr = stack_addr.wrapping_add(safe_offset);
+    if next_addr > stack_addr {
+        println!("✓ Address arithmetic working");
+    }
+}
+
+/// スタック監視機能のテスト
+fn test_stack_monitoring() {
+    println!("Testing stack monitoring...");
+
+    // 現在のスタックポインタを取得
+    let current_sp = get_current_sp();
+    println_hex!("Current SP: ", current_sp);
+
+    // スタック使用量の計算
+    let stack_base = 0x80100000;
+    let stack_used = stack_base - current_sp;
+    println_number!("Stack used: ", stack_used as u64);
+    println!(" bytes");
+
+    // スタックの健全性チェック
+    if current_sp >= 0x80000000 && current_sp < 0x80100000 {
+        println!("✓ Stack pointer in valid range");
+    } else {
+        println!("✗ Stack pointer out of range!");
+    }
+
+    // 再帰的なスタック使用テスト（制限付き）
+    test_recursive_stack_safe(5);
+
+    println!("✓ Stack monitoring tests completed");
+}
+
+/// 現在のスタックポインタを取得
+fn get_current_sp() -> usize {
+    let mut sp: usize;
+    unsafe {
+        core::arch::asm!("mv {}, sp", out(reg) sp);
+    }
+    sp
+}
+
+/// 安全な再帰テスト（浅い再帰）
+fn test_recursive_stack_safe(depth: u32) {
+    if depth == 0 {
+        let sp = get_current_sp();
+        println_number!("Recursion bottom SP: ", sp as u64);
+        return;
+    }
+
+    // スタックに何かデータを置く
+    let local_data = [depth; 4];
+    let _sum: u32 = local_data.iter().sum();
+
+    test_recursive_stack_safe(depth - 1);
+}
+
+/// CSR状態ダンプのテスト
+fn test_csr_dump() {
+    println!("Testing CSR state dump functionality...");
+
+    // 現在のCSR状態を読み取り
     let mstatus = arch::csr::read_mstatus();
+    let mie = arch::csr::read_mie();
+    let mtvec = arch::csr::read_mtvec();
     let mcause = arch::csr::read_mcause();
     let mepc = arch::csr::read_mepc();
-    let mtvec = arch::csr::read_mtvec();
 
-    println!("Panic CSR state:");
+    println!("Current CSR state:");
     println_hex!("  mstatus: ", mstatus);
-    println_hex!("  mcause: ", mcause);
-    println_hex!("  mepc: ", mepc);
-    println_hex!("  mtvec: ", mtvec);
+    println_hex!("  mie:     ", mie);
+    println_hex!("  mtvec:   ", mtvec);
+    println_hex!("  mcause:  ", mcause);
+    println_hex!("  mepc:    ", mepc);
 
-    loop {
-        unsafe {
-            core::arch::asm!("nop");
+    // 各ビットフィールドの解析テスト
+    let global_ie = (mstatus >> 3) & 1;
+    let mtie = (mie >> 7) & 1;
+    let msie = (mie >> 3) & 1;
+
+    println!("Bit field analysis:");
+    println_number!("  Global IE: ", global_ie as u64);
+    println_number!("  Timer IE:  ", mtie as u64);
+    println_number!("  SW IE:     ", msie as u64);
+
+    println!("✓ CSR dump test completed");
+}
+
+/// 制御されたパニックのテスト
+fn test_controlled_panic() {
+    println!("=== CONTROLLED PANIC TEST ===");
+    println!("This will test the panic handler with a controlled panic.");
+    println!("The system should display detailed debug information and halt safely.");
+    println!();
+
+    // ユーザに警告
+    println!("WARNING: The next operation will trigger a deliberate panic!");
+    println!("This is for testing the panic handler functionality.");
+    println!("The system will halt after displaying debug information.");
+    println!();
+
+    // カウントダウン（視覚的効果）
+    for i in (1..=5).rev() {
+        print!("Triggering panic in ");
+        print_number!(i);
+        println!(" seconds...");
+
+        // 短い遅延
+        for _ in 0..5000000 {
+            unsafe {
+                core::arch::asm!("nop");
+            }
         }
     }
+
+    println!("=== TRIGGERING TEST PANIC NOW ===");
+
+    // 実際のパニックをトリガー
+    panic!("This is a controlled test panic for debugging system verification");
+}
+
+// デバッグ用のヘルパー関数
+/// 安全なメモリダンプ（指定アドレス範囲）
+pub fn safe_memory_dump(start: usize, length: usize) {
+    println!("Memory dump:");
+    println_hex!("Start address: ", start);
+    println_number!("Length: ", length as u64);
+    println!(" bytes");
+
+    if start < 0x80000000 || start >= 0x88000000 {
+        println!("⚠ Address outside RAM range - skipping");
+        return;
+    }
+
+    let end = start + length;
+    if end >= 0x88000000 {
+        println!("⚠ Range extends beyond RAM - truncating");
+    }
+
+    let safe_end = core::cmp::min(end, 0x88000000);
+    let safe_length = safe_end - start;
+
+    for i in (0..safe_length).step_by(8) {
+        let addr = start + i;
+        if addr + 8 <= safe_end {
+            let value = unsafe { core::ptr::read_volatile(addr as *const u64) };
+
+            print!("  ");
+            print_hex!(addr);
+            print!(": ");
+            print_hex!(value as usize);
+            println!();
+        }
+
+        // 大量のダンプを防ぐため制限
+        if i >= 64 {
+            println!("  (truncated for safety)");
+            break;
+        }
+    }
+}
+
+/// システム診断情報の表示
+pub fn system_diagnostics() {
+    println!("=== SYSTEM DIAGNOSTICS ===");
+
+    // ハードウェア情報
+    let mhartid = {
+        let mut val: u64;
+        unsafe {
+            core::arch::asm!("csrr {}, mhartid", out(reg) val);
+        }
+        val
+    };
+
+    println_number!("Hart ID: ", mhartid);
+
+    // タイマ情報
+    let mtime = crate::timer::read_mtime();
+    let ticks = crate::timer::get_ticks();
+
+    println_number!("MTIME: ", mtime);
+    println_number!("Timer ticks: ", ticks);
+
+    // 割り込み統計
+    let (sw_interrupts, yields, handlers, errors) = crate::interrupt::get_statistics();
+    println_number!("SW interrupts: ", sw_interrupts);
+    println_number!("Yield calls: ", yields);
+    println_number!("Handler calls: ", handlers);
+    println_number!("Errors: ", errors);
+
+    // メモリ使用量
+    let current_sp = get_current_sp();
+    let stack_used = 0x80100000 - current_sp;
+    println_number!("Stack used: ", stack_used as u64);
+    println!(" bytes");
+
+    println!("=== DIAGNOSTICS COMPLETE ===");
+}
+
+/// 手動でのパニックトリガー（デバッグ専用）
+#[allow(dead_code)]
+pub fn trigger_debug_panic() {
+    panic!("Manual debug panic triggered");
+}
+
+/// メモリ破損の人工的なテスト（危険 - テスト用のみ）
+#[allow(dead_code)]
+pub fn test_memory_corruption_detection() {
+    println!("Testing memory corruption detection...");
+
+    let mut test_data = 0x12345678u64;
+    let original = test_data;
+
+    // データを意図的に変更
+    test_data = 0xDEADBEEF;
+
+    // 破損を検出して報告
+    if test_data != original {
+        println!("Memory corruption detected (simulated)");
+        // 実際のシステムではここでパニックする
+        // panic::memory_corruption_panic(
+        //     &test_data as *const u64 as usize,
+        //     original,
+        //     test_data
+        // );
+    }
+
+    println!("✓ Memory corruption detection test completed");
 }

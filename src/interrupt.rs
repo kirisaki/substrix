@@ -1,4 +1,4 @@
-// RISC-V ソフトウェア割り込み完全実装
+// RISC-V ソフトウェア割り込み完全実装（修正版）
 // 検証済みMSIPアクセスを基盤とする
 
 use crate::{arch::csr, println, println_hex, println_number, UART0};
@@ -21,13 +21,11 @@ pub fn init_software_interrupt() {
 
     // Step 1: MSIPの初期化（クリア状態にする）
     println!("Step 1: Initializing MSIP to clear state...");
-    match clear_software_interrupt() {
-        Ok(()) => println!("✓ MSIP cleared successfully"),
-        Err(e) => {
-            print!("✗ MSIP clear failed: ");
-            println!(e);
-            return;
-        }
+    if clear_software_interrupt().is_ok() {
+        println!("✓ MSIP cleared successfully");
+    } else {
+        println!("✗ MSIP clear failed");
+        return;
     }
 
     // Step 2: ソフトウェア割り込み許可の設定
@@ -52,7 +50,7 @@ pub fn init_software_interrupt() {
     let global_ie = (mstatus >> 3) & 1;
 
     println_hex!("MSTATUS register: ", mstatus);
-    println_number!("Global interrupts (MIE): ", global_ie);
+    println_number!("Global interrupts (MIE): ", global_ie as u64);
 
     if global_ie == 0 {
         println!("⚠ Global interrupts disabled - will enable when needed");
@@ -102,22 +100,21 @@ fn write_msip_safe(value: u32) -> Result<(), &'static str> {
 
     // 書き込み確認（3回試行）
     for _attempt in 0..3 {
-        match read_msip_safe() {
-            Ok(readback) if readback == value => return Ok(()),
-            Ok(_) => {
-                // 再試行前の短い遅延
-                for _ in 0..50 {
-                    unsafe {
-                        core::arch::asm!("nop");
-                    }
-                }
+        if let Ok(readback) = read_msip_safe() {
+            if readback == value {
+                return Ok(());
             }
-            Err(e) => {
+            // 再試行前の短い遅延
+            for _ in 0..50 {
                 unsafe {
-                    MSIP_ERRORS += 1;
+                    core::arch::asm!("nop");
                 }
-                return Err(e);
             }
+        } else {
+            unsafe {
+                MSIP_ERRORS += 1;
+            }
+            return Err("MSIP read error during verification");
         }
     }
 
@@ -148,13 +145,11 @@ pub fn yield_cpu() -> Result<(), &'static str> {
 
     // Step 1: MSIPセット
     println!("Setting MSIP...");
-    match trigger_software_interrupt() {
-        Ok(()) => println!("MSIP set successfully"),
-        Err(e) => {
-            print!("MSIP set failed: ");
-            println!(e);
-            return Err(e);
-        }
+    if trigger_software_interrupt().is_ok() {
+        println!("MSIP set successfully");
+    } else {
+        println!("MSIP set failed");
+        return Err("MSIP set failed");
     }
 
     // Step 2: グローバル割り込み有効化
@@ -179,23 +174,24 @@ pub fn yield_cpu() -> Result<(), &'static str> {
 
         // MSIPがクリアされたかチェック
         if wait_count % 1000 == 0 {
-            match read_msip_safe() {
-                Ok(0) => {
-                    println!("MSIP cleared by handler");
-                    break;
+            if let Ok(msip_val) = read_msip_safe() {
+                match msip_val {
+                    0 => {
+                        println!("MSIP cleared by handler");
+                        break;
+                    }
+                    1 => {
+                        // まだセット状態
+                    }
+                    val => {
+                        print!("Unexpected MSIP value: ");
+                        print_number!(val as u64);
+                        println!();
+                    }
                 }
-                Ok(1) => {
-                    // まだセット状態
-                }
-                Ok(val) => {
-                    print!("Unexpected MSIP value: ");
-                    print_number!(val as u64);
-                    println!();
-                }
-                Err(_) => {
-                    println!("MSIP read error during wait");
-                    break;
-                }
+            } else {
+                println!("MSIP read error during wait");
+                break;
             }
         }
     }
@@ -209,24 +205,21 @@ pub fn yield_cpu() -> Result<(), &'static str> {
     }
 
     // Step 5: 最終状態確認
-    match read_msip_safe() {
-        Ok(0) => {
+    if let Ok(final_msip) = read_msip_safe() {
+        if final_msip == 0 {
             println!("yield() completed successfully");
             Ok(())
-        }
-        Ok(val) => {
+        } else {
             print!("yield() completed but MSIP not cleared: ");
-            print_number!(val as u64);
+            print_number!(final_msip as u64);
             println!();
             // 強制クリア
             let _ = clear_software_interrupt();
             Ok(())
         }
-        Err(e) => {
-            print!("yield() completed with error: ");
-            println!(e);
-            Err(e)
-        }
+    } else {
+        println!("yield() completed with error");
+        Err("MSIP read error")
     }
 }
 
@@ -238,20 +231,17 @@ pub fn handle_software_interrupt() {
     }
 
     // 非常に重要: 割り込みをクリアして無限ループを防ぐ
-    match clear_software_interrupt() {
-        Ok(()) => {
-            // ハンドラ実行の通知（簡潔に）
-            unsafe {
-                core::ptr::write_volatile(UART0, b'S');
-                core::ptr::write_volatile(UART0, b'\n');
-            }
+    if clear_software_interrupt().is_ok() {
+        // ハンドラ実行の通知（簡潔に）
+        unsafe {
+            core::ptr::write_volatile(UART0, b'S');
+            core::ptr::write_volatile(UART0, b'\n');
         }
-        Err(_) => {
-            // エラーの場合は最小限の出力
-            unsafe {
-                core::ptr::write_volatile(UART0, b'X'); // Error marker
-                core::ptr::write_volatile(UART0, b'\n');
-            }
+    } else {
+        // エラーの場合は最小限の出力
+        unsafe {
+            core::ptr::write_volatile(UART0, b'X'); // Error marker
+            core::ptr::write_volatile(UART0, b'\n');
         }
     }
 
@@ -287,12 +277,10 @@ pub fn comprehensive_test() {
 fn test_basic_msip_operations() {
     println!("Testing basic MSIP operations...");
 
-    match test_basic_msip_operations_simple() {
-        Ok(()) => println!("✓ Basic MSIP operations successful"),
-        Err(e) => {
-            print!("✗ Basic MSIP operations failed: ");
-            println!(e);
-        }
+    if test_basic_msip_operations_simple().is_ok() {
+        println!("✓ Basic MSIP operations successful");
+    } else {
+        println!("✗ Basic MSIP operations failed");
     }
 }
 
@@ -329,12 +317,10 @@ fn test_yield_functionality() {
         print_number!(i);
         println!();
 
-        match yield_cpu() {
-            Ok(()) => println!("✓ Yield successful"),
-            Err(e) => {
-                print!("✗ Yield failed: ");
-                println!(e);
-            }
+        if yield_cpu().is_ok() {
+            println!("✓ Yield successful");
+        } else {
+            println!("✗ Yield failed");
         }
 
         // テスト間の短い遅延
@@ -354,23 +340,23 @@ fn test_stress_operations() {
     let total_tests = 10;
 
     for i in 1..=total_tests {
-        match trigger_software_interrupt() {
-            Ok(()) => {
-                // 短い遅延
-                for _ in 0..100 {
-                    unsafe {
-                        core::arch::asm!("nop");
-                    }
-                }
+        let mut success = false;
 
-                match clear_software_interrupt() {
-                    Ok(()) => {
-                        success_count += 1;
-                    }
-                    Err(_) => {}
+        if trigger_software_interrupt().is_ok() {
+            // 短い遅延
+            for _ in 0..100 {
+                unsafe {
+                    core::arch::asm!("nop");
                 }
             }
-            Err(_) => {}
+
+            if clear_software_interrupt().is_ok() {
+                success = true;
+            }
+        }
+
+        if success {
+            success_count += 1;
         }
 
         if i % 5 == 0 {
@@ -428,13 +414,11 @@ pub fn yield_cpu_relaxed() -> Result<(), &'static str> {
 
     // Step 1: MSIPセット
     println!("Setting MSIP...");
-    match trigger_software_interrupt() {
-        Ok(()) => println!("MSIP set successfully"),
-        Err(e) => {
-            print!("MSIP set failed: ");
-            println!(e);
-            return Err(e);
-        }
+    if trigger_software_interrupt().is_ok() {
+        println!("MSIP set successfully");
+    } else {
+        println!("MSIP set failed");
+        return Err("MSIP set failed");
     }
 
     // Step 2: グローバル割り込み有効化
