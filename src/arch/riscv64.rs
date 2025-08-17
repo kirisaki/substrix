@@ -1,3 +1,4 @@
+// src/arch/riscv64/mod.rs
 //! RISC-V 64-bit Architecture Implementation
 //!
 //! This module contains RISC-V specific implementations of the hardware
@@ -5,6 +6,10 @@
 //! and status registers, interrupt controllers, and timer facilities.
 
 pub mod csr;
+pub mod timer;
+
+// Re-export commonly used types for convenience
+pub use timer::{ClintTimer, TimerDuration, CLINT_TIMER};
 
 /// Machine word size for RISC-V 64-bit architecture
 pub const WORD_SIZE: usize = 8;

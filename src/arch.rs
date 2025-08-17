@@ -81,13 +81,13 @@ pub trait InterruptController {
 /// Hardware timer abstraction
 ///
 /// Provides a unified interface for timer operations, including reading
-/// current time and setting alarms for future events.
+/// current time, setting alarms, and managing timer interrupts.
 pub trait Timer {
     /// Error type for timer operations
     type Error;
 
-    /// Duration type representing time intervals
-    type Duration;
+    /// Duration type representing time intervals in timer-specific units
+    type Duration: Copy + PartialOrd + core::ops::Add<Output = Self::Duration>;
 
     /// Get the current time from this timer
     ///
@@ -98,7 +98,7 @@ pub trait Timer {
     /// Set an alarm to trigger at the specified time
     ///
     /// # Arguments
-    /// * `when` - The time at which the alarm should trigger
+    /// * `when` - The absolute time at which the alarm should trigger
     ///
     /// # Returns
     /// `Ok(())` on success, or an error if the operation failed
@@ -107,6 +107,22 @@ pub trait Timer {
     /// This function is unsafe because timer interrupts can affect
     /// system scheduling and real-time behavior.
     unsafe fn set_alarm(&self, when: Self::Duration) -> Result<(), Self::Error>;
+
+    /// Set an alarm to trigger after the specified delay
+    ///
+    /// # Arguments
+    /// * `delay` - The delay from now when the alarm should trigger
+    ///
+    /// # Returns
+    /// `Ok(())` on success, or an error if the operation failed
+    ///
+    /// # Safety
+    /// This function is unsafe because timer interrupts can affect
+    /// system scheduling and real-time behavior.
+    unsafe fn set_alarm_delay(&self, delay: Self::Duration) -> Result<(), Self::Error> {
+        let target_time = self.now() + delay;
+        self.set_alarm(target_time)
+    }
 
     /// Stop the timer and cancel any pending alarms
     ///
@@ -117,6 +133,30 @@ pub trait Timer {
     /// This function is unsafe because stopping timers can affect
     /// system scheduling and watchdog functionality.
     unsafe fn stop(&self) -> Result<(), Self::Error>;
+
+    /// Get timer frequency in Hz
+    ///
+    /// # Returns
+    /// The timer frequency (ticks per second)
+    fn frequency(&self) -> u64;
+
+    /// Convert timer ticks to milliseconds
+    ///
+    /// # Arguments
+    /// * `ticks` - Number of timer ticks
+    ///
+    /// # Returns
+    /// Equivalent time in milliseconds
+    fn ticks_to_ms(&self, ticks: Self::Duration) -> u64;
+
+    /// Convert milliseconds to timer ticks
+    ///
+    /// # Arguments
+    /// * `ms` - Time in milliseconds
+    ///
+    /// # Returns
+    /// Equivalent timer ticks
+    fn ms_to_ticks(&self, ms: u64) -> Self::Duration;
 }
 
 /// Trap (exception/interrupt) handler abstraction
@@ -191,10 +231,13 @@ pub const ARCH_INFO: ArchInfo = ArchInfo {
 /// Useful for debugging and system introspection.
 pub fn print_arch_info() {
     crate::println!("Architecture Information:");
-    crate::println!("  Name: {}", crate::console::FormatArg::Str(ARCH_INFO.name));
-    crate::println_number!("  Word size: ", ARCH_INFO.word_size as u64);
+    crate::print!("  Name: ");
+    crate::println!(ARCH_INFO.name);
+    crate::print!("  Word size: ");
+    crate::print_number!(ARCH_INFO.word_size as u64);
     crate::println!(" bytes");
-    crate::println_number!("  Page size: ", ARCH_INFO.page_size as u64);
+    crate::print!("  Page size: ");
+    crate::print_number!(ARCH_INFO.page_size as u64);
     crate::println!(" bytes");
     if ARCH_INFO.has_mmu {
         crate::println!("  MMU: Available");

@@ -1,4 +1,4 @@
-//! Enhanced Console Output System
+//! Console Output System
 //!
 //! This module provides a comprehensive console output system for bare-metal
 //! RISC-V systems, including format macro support, safe output functions,

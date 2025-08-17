@@ -1,10 +1,39 @@
+// trap.rs - Timer Integration Update
+// Update the timer interrupt handling in trap.rs to use unified HAL timer
+
+// In the existing trap.rs file, update the timer interrupt case:
+
+// OLD CODE (in trap.rs):
+// TrapCause::TimerInterrupt => {
+//     // Timer interrupt processing
+//     unsafe {
+//         // Timer interrupt marker (debug use)
+//         core::ptr::write_volatile(UART0, b'[');
+//         core::ptr::write_volatile(UART0, b'T');
+//         core::ptr::write_volatile(UART0, b'I');
+//         core::ptr::write_volatile(UART0, b'M');
+//         core::ptr::write_volatile(UART0, b']');
+//     }
+//
+//     // Call timer handler
+//     crate::timer::handle_timer_interrupt();
+//
+//     unsafe {
+//         core::ptr::write_volatile(UART0, b'T');
+//         core::ptr::write_volatile(UART0, b'\n');
+//     }
+// }
+
+// NEW CODE (replace the above with this):
+
+use crate::arch::current::timer;
 use crate::{arch, println, println_hex, UART0};
 
 // Define traps
 #[derive(Debug)]
 pub enum TrapCause {
-    SoftwareInterrupt, // ソフトウェア割り込み
-    TimerInterrupt,    // タイマ割り込み追加
+    SoftwareInterrupt, // Software interrupt
+    TimerInterrupt,    // Timer interrupt
     Ecall,
     Other(usize),
 }
@@ -34,35 +63,31 @@ pub extern "C" fn rust_trap_handler() {
     let mcause = arch::csr::read_mcause();
     let mepc = arch::csr::read_mepc();
 
-    // デバッグ: mcauseの詳細解析
-    let interrupt = (mcause >> 63) != 0;
-    let exception_code = mcause & 0x7FFFFFFFFFFFFFFF;
-
     let trap_cause = TrapCause::from_mcause(mcause);
 
     match trap_cause {
         TrapCause::SoftwareInterrupt => {
-            // ソフトウェア割り込み処理（直接MSIPクリア）
+            // Software interrupt processing (existing code unchanged)
             let msip_addr = 0x2000000 as *mut u32;
             unsafe {
-                // 成功マーカー（デバッグ用）
+                // Success marker (debug use)
                 core::ptr::write_volatile(UART0, b'[');
                 core::ptr::write_volatile(UART0, b'S');
                 core::ptr::write_volatile(UART0, b'W');
                 core::ptr::write_volatile(UART0, b']');
 
-                // MSIP を直接クリア（重要：無限ループ防止）
+                // Clear MSIP directly (important: prevents infinite loop)
                 core::ptr::write_volatile(msip_addr, 0);
 
-                // 完了マーカー
+                // Completion marker
                 core::ptr::write_volatile(UART0, b'S');
                 core::ptr::write_volatile(UART0, b'\n');
             }
         }
         TrapCause::TimerInterrupt => {
-            // タイマ割り込み処理
+            // Timer interrupt processing (UPDATED for HAL)
             unsafe {
-                // タイマ割り込みマーカー（デバッグ用）
+                // Timer interrupt marker (debug use)
                 core::ptr::write_volatile(UART0, b'[');
                 core::ptr::write_volatile(UART0, b'T');
                 core::ptr::write_volatile(UART0, b'I');
@@ -70,8 +95,8 @@ pub extern "C" fn rust_trap_handler() {
                 core::ptr::write_volatile(UART0, b']');
             }
 
-            // タイマハンドラを呼び出し
-            crate::timer::handle_timer_interrupt();
+            // Call unified HAL timer handler
+            timer::handle_timer_interrupt();
 
             unsafe {
                 core::ptr::write_volatile(UART0, b'T');
@@ -79,7 +104,7 @@ pub extern "C" fn rust_trap_handler() {
             }
         }
         TrapCause::Ecall => {
-            // ecall処理 - mepcを次の命令に進める
+            // ecall processing - advance mepc to next instruction
             unsafe {
                 arch::csr::write_mepc(mepc + 4);
                 core::ptr::write_volatile(UART0, b'E');
@@ -87,15 +112,18 @@ pub extern "C" fn rust_trap_handler() {
             }
         }
         TrapCause::Other(_cause) => {
-            // デバッグ情報の詳細出力
+            // Debug information output (existing code unchanged)
+            let interrupt = (mcause >> 63) != 0;
+            let exception_code = mcause & 0x7FFFFFFFFFFFFFFF;
+
             unsafe {
                 core::ptr::write_volatile(UART0, b'?');
 
-                // より詳細なデバッグ情報
+                // More detailed debug information
                 if interrupt {
                     core::ptr::write_volatile(UART0, b'I'); // Interrupt
 
-                    // 例外コードの出力（16進）
+                    // Output exception code (hex)
                     let code_high = (exception_code >> 4) & 0xF;
                     let code_low = exception_code & 0xF;
 
@@ -124,7 +152,7 @@ pub extern "C" fn rust_trap_handler() {
                     core::ptr::write_volatile(UART0, hex_char);
                 }
 
-                // mepcの詳細
+                // mepc details
                 core::ptr::write_volatile(UART0, b'@');
                 let mepc_low = (mepc >> 4) & 0xF;
                 let mepc_hex = if mepc_low < 10 {
@@ -137,11 +165,11 @@ pub extern "C" fn rust_trap_handler() {
                 core::ptr::write_volatile(UART0, b'\n');
             }
 
-            // ソフトウェア割り込みが Other ケースに来た場合の緊急処理
+            // Emergency handling for software interrupts that come to Other case
             if interrupt && exception_code == 3 {
                 let msip_addr = 0x2000000 as *mut u32;
                 unsafe {
-                    // 緊急処理マーカー
+                    // Emergency processing marker
                     core::ptr::write_volatile(UART0, b'[');
                     core::ptr::write_volatile(UART0, b'E');
                     core::ptr::write_volatile(UART0, b'M');
@@ -150,7 +178,7 @@ pub extern "C" fn rust_trap_handler() {
                     core::ptr::write_volatile(UART0, b'G');
                     core::ptr::write_volatile(UART0, b']');
 
-                    core::ptr::write_volatile(msip_addr, 0); // 緊急MSIPクリア
+                    core::ptr::write_volatile(msip_addr, 0); // Emergency MSIP clear
 
                     core::ptr::write_volatile(UART0, b'S');
                     core::ptr::write_volatile(UART0, b'\n');
@@ -170,7 +198,7 @@ pub fn init_trap() {
         arch::csr::write_mtvec(handler_addr);
     }
 
-    println!("Safe trap handler initialized (debug version)");
+    println!("Safe trap handler initialized (HAL timer integrated)");
     println_hex!("mtvec: ", handler_addr);
 }
 
